@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Veri Giriş Sitesi (Firebase)</title>
+  <link href="https://cdn.tailwindcss.com/2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  
+  <!-- React ve ReactDOM -->
+  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  
+  <!-- Babel (JSX'i tarayıcıda çalıştırmak için) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- YENİ: Firebase config dosyasını buradan yüklüyoruz -->
+  <!-- Bu script, alttaki 'module' script'ten ÖNCE gelmelidir -->
+  <!-- Bu dosyanın 'index.html' ile aynı klasörde olması gerekir -->
+  <script src="firebase-config.js"></script>
+
+  <!-- Firebase SDK (Gerekli modülleri import ediyoruz) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { 
+      getAuth, 
+      onAuthStateChanged, 
+      signInWithEmailAndPassword, 
+      createUserWithEmailAndPassword, 
+      signOut, 
+      signInAnonymously,
+      signInWithCustomToken 
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { 
+      getFirestore, 
+      collection, 
+      addDoc, 
+      doc, 
+      deleteDoc, 
+      onSnapshot, 
+      query,
+      setLogLevel
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // --- Firebase Başlatma ---
+    // 1. ADIM: Yapılandırma bilgisi artık 'firebase-config.js' dosyasından
+    // global 'firebaseConfig' değişkeni olarak geliyor.
+    // Gömülü nesne buradan kaldırıldı.
+
+    // 'firebaseConfig' değişkeni artık global scope'tan (firebase-config.js)
+    // doğrudan okunacak ve initializeApp tarafından kullanılacaktır.
+    // HATA 1 DÜZELTMESİ: 'firebaseConfig' yerine 'window.firebaseConfig' kullan
+    const app = initializeApp(window.firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+    
+    // Firebase Firestore loglamasını aç (debug için)
+    setLogLevel('Debug');
+
+    // 2. ADIM: Veritabanı koleksiyon yolunu belirleyin.
+    // Bu, veritabanınızın kökünde 'bakim-kayitlari' adında bir koleksiyon oluşturur.
+    const collectionPath = "bakim-kayitlari"; 
+    const dbCollection = collection(db, collectionPath);
+    
+    // React'i global scope'a taşıyarak <script type="text/babel"> içinde erişilebilir yap
+    window.React = React;
+    window.db = db;
+    window.auth = auth;
+    window.dbCollection = dbCollection;
+    // Platforma özel değişkenler kaldırıldı (appId, initialAuthToken)
+    
+    // HATA 2 DÜZELTMESİ: Fonksiyonları 'window.firebase' nesnesi yerine
+    // doğrudan 'window' nesnesine ekle. Bu, zamanlama (race condition)
+    // sorunlarını engeller.
+    window.onAuthStateChanged = onAuthStateChanged;
+    window.signInWithEmailAndPassword = signInWithEmailAndPassword;
+    window.createUserWithEmailAndPassword = createUserWithEmailAndPassword;
+    window.signOut = signOut;
+    window.addDoc = addDoc;
+    window.doc = doc;
+    window.deleteDoc = deleteDoc;
+    window.onSnapshot = onSnapshot;
+    window.query = query;
+    window.collection = collection;
+    window.signInAnonymously = signInAnonymously;
+    window.signInWithCustomToken = signInWithCustomToken;
+
+  </script>
+
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- 
+    SCRIPT TİPİ "text/babel" OLARAK DEĞİŞTİRİLDİ.
+    Babel bu etiketi bulup içindeki JSX kodunu tarayıcının anlayacağı
+    normal JavaScript'e (React.createElement) anlık olarak çevirecektir.
+  -->
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // HATA 2 DÜZELTMESİ: 'window.firebase' yerine doğrudan 'window'dan oku
+    const {
+      onAuthStateChanged,
+      signInWithEmailAndPassword,
+      createUserWithEmailAndPassword,
+      signOut,
+      addDoc,
+      doc,
+      deleteDoc,
+      onSnapshot,
+      query,
+      signInAnonymously,
+      signInWithCustomToken
+    } = window;
+
+    // Firebase servislerini global scope'tan al
+    const db = window.db;
+    const auth = window.auth;
+    const dbCollection = window.dbCollection;
+    // const initialAuthToken = window.initialAuthToken; // KALDIRILDI - Artık platforma bağlı değiliz
+
+    // Admin yetkisi için kullanılacak e-posta (Eski 'lqcadmin012' şifresinin yerine)
+    const ADMIN_EMAIL = "admin@lqc.com"; // Burayı kendi admin e-postanızla değiştirin
+
+    const TABLE_HEADERS = [
+      "Kullanıcı", "Tarih", "Vardiya", "Hat", "Dummy No",
+      "Jig No", "Hata Kodu", "Değişen Parça", "Parça Adedi", "Açıklama"
+    ];
+
+    // Generate Jig No Options: A1-150, B1-150, C1-150
+    const generateJigNoOptions = () => {
+      const arr = [];
+      for (let p of ['A', 'B', 'C']) {
+        for (let i = 1; i <= 150; i++) {
+          arr.push(`${p}${i}`);
+        }
+      }
+      return arr;
+    };
+
+    // --- React Bileşenleri (JSX ile yeniden yazıldı) ---
+
+    // Animasyonlu onay kutusu (Modal)
+    function Modal({ open, onClose, onConfirm, loading, message, formData }) {
+      if (!open) return null;
+
+      // JSX formatında
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-all duration-300">
+          <div 
+            className="relative bg-gradient-to-br from-white via-gray-50 to-blue-100 rounded-xl shadow-2xl px-8 py-7 w-full max-w-md border border-blue-200" 
+            style={{ animation: 'fadein 0.35s' }}
+          >
+            <button
+              key="closebtn"
+              onClick={!loading ? onClose : null}
+              className={`absolute top-3 right-3 text-gray-400 hover:text-gray-700 transition ${loading ? 'opacity-40 cursor-not-allowed' : ''}`}
+              tabIndex={0}
+              aria-label="Kapat"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" className="w-6 h-6">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            
+            <div className="flex flex-col items-center">
+              <div className="mb-2">
+                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center shadow-lg mb-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" className="w-9 h-9 text-blue-500">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1 4v-4m0 0V9a1 1 0 00-1-1h-1a1 1 0 00-1 1v3m4 0h1v4h1m-1-4v4m0 0V9a1 1 0 00-1-1h-1a1 1 0 00-1 1v3" />
+                  </svg>
+                </div>
+              </div>
+              <h2 className="text-2xl font-bold text-blue-900 mb-2">Kaydı Onayla</h2>
+              <p className="mb-3 text-gray-500 text-center">Lütfen girdiğiniz bilgileri kontrol edip işlemi onaylayın.</p>
+              
+              <div className="rounded-lg border border-blue-200 bg-white p-4 mb-3 w-full text-sm" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+                <table className="w-full">
+                  <tbody>
+                    {Object.entries(formData).map(([key, val]) => (
+                      <tr key={key}>
+                        <td className="py-1 pr-3 text-gray-500 font-semibold w-1/2 align-top">
+                          {({
+                            kullaniciNo: "Kullanıcı",
+                            tarih: "Tarih",
+                            vardiya: "Vardiya",
+                            hat: "Hat",
+                            dummyNo: "Dummy No",
+                            jigNo: "Jig No",
+                            hataKodu: "Hata Kodu",
+                            degisenParca: "Değişen Parça",
+                            parcaAdedi: "Parça Adedi",
+                            aciklama: "Açıklama"
+                          })[key] || key}
+                        </td>
+                        <td className="py-1 pl-1 text-gray-700 align-top">{val || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {message && (
+                <div
+                  className={`mb-3 px-4 py-2 rounded text-center font-semibold transition-all duration-300
+                    ${message.includes('başarıyla') ? 'bg-green-50 text-green-700 border border-green-200' :
+                      message.includes('kaydedilemedi') ? 'bg-red-50 text-red-600 border border-red-200' :
+                      'bg-blue-50 text-blue-700 border border-blue-200'}`}
+                >
+                  {message}
+                </div>
+              )}
+
+              {loading && (
+                <div className="flex items-center justify-center py-2 mb-3">
+                  <Spinner />
+                </div>
+              )}
+
+              {(!loading && !message) && (
+                <div className="flex justify-end gap-2 w-full mt-2">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="bg-gray-200 text-gray-700 px-4 py-2 rounded hover:bg-gray-300 transition font-semibold border border-gray-300"
+                  >
+                    Vazgeç
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onConfirm}
+                    className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-4 py-2 rounded hover:from-blue-600 hover:to-blue-700 transition font-semibold shadow-md border border-blue-400"
+                  >
+                    Onayla ve Kaydet
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Fade-in animasyon tanımı (Değişiklik yok)
+    const style = document.createElement("style");
+    style.innerHTML = `
+      @keyframes fadein {
+        from { opacity: 0; transform: scale(0.9);}
+        to { opacity: 1; transform: scale(1);}
+      }
+      .animate-fadein { animation: fadein 0.35s;}
+    `;
+    document.head.appendChild(style);
+
+    // Aranabilir Select Kutusu (JSX)
+    function SearchableSelect({ name, value, options, onChange, placeholder, required, error }) {
+      const [search, setSearch] = useState("");
+      const [showOptions, setShowOptions] = useState(false);
+
+      const allOptions = [{ label: 'Seçimi Kaldır', value: '' }, ...options.map(opt => ({ label: opt, value: opt }))];
+      const filteredOptions = allOptions.filter(opt =>
+        opt.label.toLowerCase().includes(search.toLowerCase())
+      );
+
+      const handleSelect = (option) => {
+        onChange({ target: { name, value: option.value } });
+        setSearch("");
+        setShowOptions(false);
+      };
+
+      const handleInputChange = (e) => {
+        setSearch(e.target.value);
+      };
+
+      const onBlur = () => setTimeout(() => setShowOptions(false), 150);
+
+      return (
+        <div className="relative">
+          <input
+            key="input"
+            type="text"
+            name={name}
+            value={value ? value : search}
+            autoComplete="off"
+            placeholder={placeholder}
+            className={`mt-1 block w-full border border-gray-300 rounded-md p-2 bg-white ${error ? "border-red-500" : ""}`}
+            required={required}
+            readOnly={false}
+            onChange={handleInputChange}
+            onFocus={() => setShowOptions(true)}
+            onBlur={onBlur}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.preventDefault();
+            }}
+          />
+          {showOptions && (
+            <div
+              key="dropdown"
+              className="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded shadow max-h-40 overflow-y-auto"
+            >
+              {filteredOptions.length > 0
+                ? filteredOptions.map(opt =>
+                    <div
+                      key={opt.value}
+                      className={`px-3 py-2 hover:bg-blue-100 cursor-pointer${opt.value === value ? ' bg-blue-200' : ''}`}
+                      onMouseDown={() => handleSelect(opt)}
+                    >
+                      {opt.label}
+                    </div>
+                  )
+                : <div className="px-3 py-2 text-gray-400">Seçenek yok</div>
+              }
+            </div>
+          )}
+          {error && <p className="text-red-500 text-xs mt-1">{error}</p>}
+        </div>
+      );
+    }
+
+    // Yükleme spinnerı bileşeni (JSX)
+    function Spinner() {
+      return (
+        <svg
+          className="animate-spin h-5 w-5 text-blue-500"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <circle
+            className="opacity-25"
+            cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"
+          ></circle>
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+          ></path>
+        </svg>
+      );
+    }
+
+
+    // --- Ana Uygulama (App) Bileşeni ---
+    const App = () => {
+      const [formData, setFormData] = useState({
+        kullaniciNo: '',
+        tarih: new Date().toISOString().split('T')[0],
+        vardiya: '',
+        hat: '',
+        dummyNo: '',
+        jigNo: '',
+        hataKodu: '',
+        degisenParca: '',
+        parcaAdedi: '',
+        aciklama: ''
+      });
+
+      // --- YENİ STATE'LER (Firebase için) ---
+      const [user, setUser] = useState(null); // Oturum açan kullanıcı
+      const [isAuthReady, setIsAuthReady] = useState(false); // Auth durumu kontrol edildi mi?
+      const [isAdmin, setIsAdmin] = useState(false); // Kullanıcı admin mi?
+      const [tableData, setTableData] = useState([]); // Veriler artık Firestore'dan gelecek
+      const [isLoading, setIsLoading] = useState(false); // Form kaydetme yüklemesi
+      
+      // Giriş formu state'leri
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [authError, setAuthError] = useState('');
+      
+      // --- ESKİ STATE'LER ---
+      const [errors, setErrors] = useState({});
+      const [submissionMessage, setSubmissionMessage] = useState('');
+      
+      // Modal States
+      const [isModalOpen, setIsModalOpen] = useState(false);
+      const [modalLoading, setModalLoading] = useState(false);
+      const [modalMessage, setModalMessage] = useState('');
+
+      // Seçenek listeleri (Değişiklik yok)
+      const vardiyaOptions = ['Sabah', 'Akşam'];
+      const hatOptions = ["İç", "İç 1", "İç 2", "Dış","Dış 1","Dış 2", "Mix", "CAC", "Genel"];
+      const dummyNoOptions = Array.from({length: 42}, (_, i) => (i+1).toString());
+      const jigNoOptions = generateJigNoOptions();
+      const hataKoduOptions = ["0.0 Hata Kodu Yok", "B.01 - Bara Fırça Çıkık", "B.02 - Bara Yayı", "B.03 - Bara Kablosu Çıkık", "B.04 - Bara Kablosu Kopuk", "B.05 - Bara Çıkık", "B.06 - Barada Elektrik Yok", "B.07 - Bara Sıkışmış", "B.08 - Bara Soketi Çıkık", "B.09 - Bara Pabuç Arızalı", "B.10 - Bara Kırık", "B.11 - Bara Fırça Kırık", "B.12 - Bara Arızalı", "D.01 - Waiting", "D.02 - Kol Çıkık", "D.03 - Kol Kırık", "D.04 - Kol Gevşek", "D.05 - Kol Plastiği Eksik", "D.06 - Kol Arızalı", "D.07 - Dummy Kablo Kopuk", "D.08 - Dummy Kablo Çıkık", "D.09 - Haberleşme Hatası", "D.11 - Ekran Yok/Kapalı", "D.12 - Ekran Yerinden Çıkık", "D.13 - Enerji Yok", "D.14 - Eeprom Okumuyor", "D.15 - Ürün Çalıştırmıyor", "D.16 - Buzzer Arızası", "D.17 - Basınç Düşük", "D.18 - Basınç Yüksek", "D.19 - Basınçlar Ters", "D.20 - Basınç Göstermiyor", "D.21 - Basınç Hatası", "D.22 - Data Atmıyor", "G.01 - Sigorta Arızalı", "G.02 - Lehim Kopuk", "G.03 - Krokodil Kopuk", "G.04 - Krokodil Kırık", "G.05 - Krokodil Arızalı", "G.06 - Vida Yok", "G.07 - Ayak Yok", "G.08 - Ayak Çıkık", "G.09 - Ayak Arızalı", "G.10 - Arıza Bulunamadı", "G.11 - Çalışmıyor", "G.12 - Kapalı Geliyor", "G.13 - Gaz Kaçak", "J.01 - Jig Kapak Kırık", "J.02 - Jig Kablo Kopuk", "J.03 - Jig Ayak Yok", "J.04 - Jig Arızalı", "J.05 - Jig Yay Arızalı", "J.06 - Jig Kapak Çıkık", "J.07 - Jig Kapak Arızalı", "K.01 - Kablo Arızalı", "K.02 - Kablo Kopuk", "K.03 - Kablo Çıkık", "K.04 - LGMV Kablosu Arızalı", "K.05 - LGMV Kablosu Kopuk", "K.06 - LGMV Kablosu Çıkık", "K.07 - LGMV Kablosu Yok", "M.01 - Mıknatıs Arızalı", "M.02 - Mıknatıs Yok", "M.03 - Mıknatıs Çıkık", "M.04 - Mıknatıs Kırık", "M.05 - Mıknatıs Gevşek", "M.06 - Mıknatıs Kopuk", "S.01 - Soket Arızalı", "S.02 - Soket Çıkık", "S.03 - Soket Kırık", "S.04 - Soket Kopuk", "S.05 - Soket Gevşemiş", "S.06 - Soket Kablo Arızalı", "S.07 - Soket Kablo Çıkık", "S.08 - Soket Kablo Kopuk", "S.09 - Terminal Çıkık/Kopuk", "S.10 - Terminal Arızalı", "S.11 - Soket Yok", "T.01 - Topraklama Hatası", "T.02 - Topraklama Eksik", "T.03 - Topraklama Mıknatıs", "T.04 - Topraklama Kablosu Arızalı", "T.05 - Topraklama Kablosu Kopuk", "T.06 - Topraklama Kablosu Çıkık", "T.07 - Topraklama Kablosu Soket Çıkık", "TS.01 - Yüksek Gerilim Hatası", "TS.02 - Yalıtım Hatası", "TS.03 - Kaçak Akım Hatası", "U.01 - Uçluk Arızalı", "U.02 - Uçluk Çıkık", "U.03 - Uçluk Kırık", "U.04 - Uçluk Kopuk", "U.05 - Uçluk Sıkışmış", "U.06 - Uçluk Yamuk", "U.07 - Uçluk Yapışmış", "U.08 - Uçluk Yanmış", "U.09 - Uçluk Yok", "U.10 - Uçluk soketten çıkmış", "U.11 - Kovan Arızalı", "U.12 - Kovan lehim erimiş", "U.13 - Kovan yapışmış", "U.14 - Kovan Yamuk", "U.15 - Kovan Kırık", "Y.01 - Yay Arızalı", "Y.02 - Yay Erimiş/Yanmış"];
+      const degisenParcaOptions = ["Değişen Parça Yok", "Uçluk", "Mıknatıs", "Soket", "LGMV Kablosu", "Yay", "Hortum", "Terminal", "Krokodil", "Pabuç", "Lehim", "Optokuplör", "Ayak", "Kovan", "Vida", "Kapak", "Kablo", "Wifi Modül", "Fiber Somun", "Filtre", "Conta", "Bara", "Fırça", "Kol Plastiği", "Kaplin", "Oring", "Somun", "Teflon", "Kol", "Röle", "Lamba", "Anahtar", "Sigorta", "Mandal", "Güç Adaptörü"];
+      const parcaAdediOptions = Array.from({length: 21}, (_, i) => i.toString());
+
+      // --- YENİ: Firebase Auth (Kullanıcı Oturumu) useEffect ---
+      useEffect(() => {
+        // YEREL ÇALIŞTIRMA İÇİN DÜZELTME:
+        // attemptLogin() fonksiyonu ve çağrısı kaldırıldı.
+        // Bu fonksiyon, platforma özel otomatik/anonim girişi zorluyordu.
+        // Artık doğrudan e-posta/şifre ekranının gelmesi için sadece dinleyiciyi bırakıyoruz.
+
+        const unsubscribe = onAuthStateChanged(auth, (user) => {
+          if (user) {
+            setUser(user);
+            setIsAdmin(user.email === ADMIN_EMAIL);
+            // Formdaki kullanıcıNo'yu otomatik doldur
+            setFormData(prev => ({ ...prev, kullaniciNo: user.email || user.uid }));
+            setAuthError(''); // Giriş başarılı, hatayı temizle
+          } else {
+            setUser(null);
+            setIsAdmin(false);
+            setFormData(prev => ({ ...prev, kullaniciNo: '' })); // Çıkış yapınca formu temizle
+          }
+          setIsAuthReady(true);
+        });
+
+        // Cleanup
+        return () => unsubscribe();
+      }, []);
+
+      // --- YENİ: Firebase Firestore (Veri Çekme) useEffect ---
+      useEffect(() => {
+        // HATA DÜZELTMESİ:
+        // Auth durumu hazır olmadan VEYA user objesi (anonim bile olsa)
+        // henüz set edilmeden veri çekmeye çalışma.
+        if (!isAuthReady || !user) {
+          setTableData([]); // Veri yoksa tabloyu boşalt
+          setIsLoading(false);
+          return; // Dinleyiciyi bağlama
+        }
+
+        setIsLoading(true);
+        // Gerçek zamanlı dinleyici (onSnapshot)
+        const q = query(dbCollection); // orderBy('tarih', 'desc') kaldırıldı (index gerektirir)
+        
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+          const data = [];
+          querySnapshot.forEach((doc) => {
+            data.push({ id: doc.id, ...doc.data() });
+          });
+          
+          // Sıralamayı JavaScript içinde yap (orderBy'a alternatif)
+          data.sort((a, b) => new Date(b.tarih) - new Date(a.tarih));
+          
+          setTableData(data);
+          setIsLoading(false);
+        }, (error) => {
+          console.error("Firestore'dan veri okuma hatası:", error);
+          setSubmissionMessage("Veriler yüklenemedi.");
+          setIsLoading(false);
+        });
+
+        // Cleanup
+        return () => unsubscribe();
+      }, [isAuthReady, user]); // Bağımlılığı [isAuthReady, user] olarak GÜNCELLE
+
+      // Form alanlarını güncelleme (Değişiklik yok)
+      const handleChange = (e) => {
+        const { name, value, type, checked } = e.target;
+        setFormData(prev => ({
+          ...prev,
+          [name]: type === 'checkbox' ? checked : value
+        }));
+        setErrors(prev => ({ ...prev, [name]: null }));
+      };
+
+      // Select kutularını güncelleme (Değişiklik yok)
+      const handleSelectChange = (e, options) => {
+        const { name, value } = e.target;
+        if (value === "" || options.includes(value)) {
+          setFormData(prev => ({
+            ...prev,
+            [name]: value
+          }));
+        }
+        setErrors(prev => ({ ...prev, [name]: null }));
+      };
+
+      // Kaydetmeden önce onayı göster (Değişiklik yok)
+      const handlePreSubmit = (e) => {
+        e.preventDefault();
+        if (validateForm()) {
+          setIsModalOpen(true);
+          setModalMessage('');
+        } else {
+          setSubmissionMessage('Lütfen tüm zorunlu alanları doldurun.');
+          setTimeout(() => setSubmissionMessage(''), 3000);
+        }
+      };
+
+      // --- GÜNCELLENDİ: handleModalConfirm (Firebase'e Kaydet) ---
+      const handleModalConfirm = async () => {
+        setModalLoading(true);
+        setModalMessage('Kaydediliyor...');
+        
+        const newEntry = {
+          ...formData,
+          // "-" olan boş değerleri sakla
+          vardiya: formData.vardiya || '-',
+          hat: formData.hat || '-',
+          dummyNo: formData.dummyNo || '-',
+          jigNo: formData.jigNo || '-',
+          hataKodu: formData.hataKodu || '-',
+          degisenParca: formData.degisenParca || '-',
+          parcaAdedi: formData.parcaAdedi || '-',
+          // Kaydı oluşturan kullanıcıyı ekle
+          kaydedenKullaniciId: user ? user.uid : 'unknown',
+          kaydedenEmail: user ? user.email : 'unknown'
+        };
+
+        try {
+          // Google Sheets fetch() ÇAĞRISI KALDIRILDI
+          // Firestore'a yeni doküman ekle
+          await addDoc(dbCollection, newEntry);
+          
+          setModalMessage('Kayıt başarıyla Firebase\'e eklendi!');
+          
+          // localStorage GÜNCELLEMESİ KALDIRILDI
+          // setTableData güncellemesi de kaldırıldı, onSnapshot halledecek.
+
+        } catch (error) {
+          console.error("Firebase kaydetme hatası: ", error);
+          setModalMessage('Firebase\'e kaydedilemedi!');
+        }
+        
+        // Formu temizle
+        setFormData({
+          kullaniciNo: user.email, // Kullanıcıyı temizleme
+          tarih: new Date().toISOString().split('T')[0],
+          vardiya: '',
+          hat: '',
+          dummyNo: '',
+          jigNo: '',
+          hataKodu: '',
+          degisenParca: '',
+          parcaAdedi: '',
+          aciklama: ''
+        });
+        setErrors({});
+        setModalLoading(false);
+        
+        setTimeout(() => {
+          setIsModalOpen(false);
+          setModalMessage('');
+        }, 2000);
+      };
+
+      const handleModalClose = () => {
+        setIsModalOpen(false);
+        setModalMessage('');
+      };
+
+      // Form validasyonu (kullaniciNo check kaldırıldı)
+      const validateForm = () => {
+        const newErrors = {};
+        
+        // Bu alan zorunlu, ancak artık auth'tan geliyor
+        if (!formData.kullaniciNo) newErrors.kullaniciNo = 'Kullanıcı No zorunludur (Oturum açılmalı)';
+        
+        if (!formData.tarih) newErrors.tarih = 'Tarih zorunludur';
+        if (!formData.vardiya) newErrors.vardiya = 'Vardiya zorunludur';
+        if (!formData.hat) newErrors.hat = 'Hat zorunludur';
+        if (!formData.aciklama) newErrors.aciklama = 'Açıklama zorunludur';
+
+        if (formData.degisenParca && !formData.parcaAdedi) {
+          newErrors.parcaAdedi = 'Parça Adedi seçilmek zorunda';
+        }
+        if (formData.parcaAdedi && !formData.degisenParca) {
+          newErrors.degisenParca = 'Değişen Parça seçilmek zorunda';
+        }
+
+        const hasDummyOrJig = !!formData.dummyNo || !!formData.jigNo;
+        if (hasDummyOrJig) {
+          if (!formData.hataKodu) {
+            newErrors.hataKodu = 'Hata Kodu zorunludur (Dummy/Jig girildiğinde)';
+          }
+          if (!formData.degisenParca) {
+            newErrors.degisenParca = 'Değişen Parça zorunludur (Dummy/Jig girildiğinde)';
+          }
+          if (!formData.parcaAdedi) {
+            newErrors.parcaAdedi = 'Parça Adedi zorunludur (Dummy/Jig girildiğinde)';
+          }
+        }
+
+        if (formData.hataKodu) {
+          if (!formData.dummyNo && !formData.jigNo) {
+            newErrors.dummyNo = 'Hata Kodu girildiğinde Dummy No veya Jig No zorunludur';
+            newErrors.jigNo = 'Hata Kodu girildiğinde Dummy No veya Jig No zorunludur';
+          }
+        }
+
+        // Sadece listeden seçme validasyonları
+        if (formData.vardiya && !vardiyaOptions.includes(formData.vardiya)) newErrors.vardiya = 'Sadece listeden seçiniz';
+        if (formData.hat && !hatOptions.includes(formData.hat)) newErrors.hat = 'Sadece listeden seçiniz';
+        if (formData.dummyNo && !dummyNoOptions.includes(formData.dummyNo)) newErrors.dummyNo = 'Sadece listeden seçiniz';
+        if (formData.jigNo && !jigNoOptions.includes(formData.jigNo)) newErrors.jigNo = 'Sadece listeden seçiniz';
+        if (formData.hataKodu && !hataKoduOptions.includes(formData.hataKodu)) newErrors.hataKodu = 'Sadece listeden seçiniz';
+        if (formData.degisenParca && !degisenParcaOptions.includes(formData.degisenParca)) newErrors.degisenParca = 'Sadece listeden seçiniz';
+        if (formData.parcaAdedi && !parcaAdediOptions.includes(formData.parcaAdedi)) newErrors.parcaAdedi = 'Sadece listeden seçiniz';
+
+        setErrors(newErrors);
+        return Object.keys(newErrors).length === 0;
+      };
+
+      // --- YENİ: Firebase Auth Fonksiyonları ---
+      const handleLogin = async (e) => {
+        e.preventDefault();
+        setAuthError('');
+        setIsLoading(true);
+        try {
+          await signInWithEmailAndPassword(auth, email, password);
+          // onAuthStateChanged gerisini halleder
+        } catch (error) {
+          console.error("Giriş hatası:", error);
+          setAuthError('E-posta veya şifre hatalı.');
+        }
+        setIsLoading(false);
+      };
+
+      const handleSignUp = async (e) => {
+        e.preventDefault();
+        setAuthError('');
+        setIsLoading(true);
+        try {
+          await createUserWithEmailAndPassword(auth, email, password);
+          // onAuthStateChanged gerisini halleder
+        } catch (error) {
+          console.error("Kayıt hatası:", error);
+          setAuthError('Kayıt başarısız: ' + error.message);
+        }
+        setIsLoading(false);
+      };
+
+      const handleLogout = async () => {
+        await signOut(auth);
+      };
+      
+      // --- GÜNCELLENDİ: handleDeleteRow (Firestore'dan Sil) ---
+      const handleDeleteRow = async (index) => {
+        // window.confirm() KULLANIMI YASAK OLDUĞUNDAN KALDIRILDI.
+        // Güvenlik için buraya özel bir onay modalı yapılmalı.
+        // Şimdilik, admin butona bastığı anda silme işlemi gerçekleşir.
+        
+        const docIdToDelete = tableData[index].id;
+        if (!docIdToDelete) {
+          console.error("Silinecek doküman ID'si bulunamadı.");
+          return;
+        }
+
+        const docRef = doc(db, collectionPath, docIdToDelete);
+
+        try {
+          await deleteDoc(docRef);
+          // localStorage GÜNCELLEMESİ KALDIRILDI
+          // setTableData güncellemesi de kaldırıldı, onSnapshot halledecek.
+        } catch (error) {
+          console.error("Silme hatası: ", error);
+          setSubmissionMessage("Kayıt silinemedi.");
+        }
+      };
+      
+      // --- RENDER ---
+      
+      // Auth hazır değilse yükleme ekranı göster
+      if (!isAuthReady) {
+        return (
+          <div className="flex justify-center items-center min-h-screen">
+            <Spinner />
+            <span className="ml-2">Oturum kontrol ediliyor...</span>
+          </div>
+        );
+      }
+      
+      // Kullanıcı girişi yapılmadıysa Login/Register formunu göster
+      if (!user) {
+        return (
+          <div className="container mx-auto p-4 bg-gray-100 min-h-screen flex items-center justify-center">
+            <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
+              <h1 className="text-2xl font-bold mb-6 text-center">Bakım Takip Sistemi Giriş</h1>
+              <form onSubmit={handleLogin}>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700">E-posta</label>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="mt-1 block w-full border border-gray-300 rounded-md p-2"
+                    placeholder="kullanici@lqc.com"
+                    required
+                  />
+                </div>
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700">Şifre</label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="mt-1 block w-full border border-gray-300 rounded-md p-2"
+                    placeholder="******"
+                    required
+                  />
+                </div>
+                {authError && <p className="text-red-500 text-xs mb-4">{authError}</p>}
+                <div className="flex items-center gap-4">
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="bg-blue-500 text-white p-2 rounded-md hover:bg-blue-600 flex-grow"
+                  >
+                    {isLoading ? <Spinner /> : 'Giriş Yap'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSignUp}
+                    disabled={isLoading}
+                    className="bg-gray-200 text-gray-700 p-2 rounded-md hover:bg-gray-300 flex-grow"
+                  >
+                    {isLoading ? <Spinner /> : 'Kayıt Ol'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      }
+      
+      // Kullanıcı giriş yaptıysa ana uygulamayı göster
+      return (
+        <div className="container mx-auto p-4 bg-gray-100 min-h-screen">
+          <Modal
+            open={isModalOpen}
+            onClose={handleModalClose}
+            onConfirm={handleModalConfirm}
+            loading={modalLoading}
+            message={modalMessage}
+            formData={formData}
+          />
+        
+          <div className="flex justify-between items-center mb-4">
+            <h1 className="text-2xl font-bold">Veri Giriş Formu</h1>
+            <div>
+              <span className="text-gray-600 mr-2">Hoşgeldin, {user.email || user.uid}</span>
+              {isAdmin && <span className="text-green-600 font-semibold mr-4">(Admin)</span>}
+              <button
+                onClick={handleLogout}
+                className="bg-red-500 text-white px-3 py-2 rounded hover:bg-red-700"
+              >
+                Çıkış Yap
+              </button>
+            </div>
+          </div>
+
+          {/* ESKİ Admin giriş formu KALDIRILDI */}
+          
+          {/* Ana Form */}
+          <form onSubmit={handlePreSubmit} className="bg-white p-6 rounded-lg shadow-md mb-6">
+            
+            {/* Kullanıcı No (Artık otomatik ve salt-okunur) */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Kullanıcı *</label>
+              <input
+                type="text"
+                name="kullaniciNo"
+                value={formData.kullaniciNo}
+                className="mt-1 block w-full border border-gray-300 rounded-md p-2 bg-gray-100 cursor-not-allowed"
+                readOnly
+              />
+              {errors.kullaniciNo && <p className="text-red-500 text-xs mt-1">{errors.kullaniciNo}</p>}
+            </div>
+            
+            {/* Tarih */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Tarih *</label>
+              <input
+                type="date"
+                name="tarih"
+                value={formData.tarih}
+                onChange={handleChange}
+                className="mt-1 block w-full border border-gray-300 rounded-md p-2"
+                required
+              />
+              {errors.tarih && <p className="text-red-500 text-xs mt-1">{errors.tarih}</p>}
+            </div>
+            
+            {/* Vardiya */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Vardiya *</label>
+              <SearchableSelect
+                name="vardiya"
+                value={formData.vardiya}
+                options={vardiyaOptions}
+                onChange={(e) => handleSelectChange(e, vardiyaOptions)}
+                placeholder="Seçiniz"
+                required={true}
+                error={errors.vardiya}
+              />
+            </div>
+            
+            {/* Hat */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Hat *</label>
+              <SearchableSelect
+                name="hat"
+                value={formData.hat}
+                options={hatOptions}
+                onChange={(e) => handleSelectChange(e, hatOptions)}
+                placeholder="Seçiniz"
+                required={true}
+                error={errors.hat}
+              />
+            </div>
+            
+            {/* Dummy No */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Dummy No</label>
+              <SearchableSelect
+                name="dummyNo"
+                value={formData.dummyNo}
+                options={dummyNoOptions}
+                onChange={(e) => handleSelectChange(e, dummyNoOptions)}
+                placeholder="Seçiniz"
+                required={false}
+                error={errors.dummyNo}
+              />
+            </div>
+            
+            {/* Jig No */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Jig No</label>
+              <SearchableSelect
+                name="jigNo"
+                value={formData.jigNo}
+                options={jigNoOptions}
+                onChange={(e) => handleSelectChange(e, jigNoOptions)}
+                placeholder="Seçiniz"
+                required={false}
+                error={errors.jigNo}
+              />
+            </div>
+            
+            {/* Hata Kodu */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Hata Kodu</label>
+              <SearchableSelect
+                name="hataKodu"
+                value={formData.hataKodu}
+                options={hataKoduOptions}
+                onChange={(e) => handleSelectChange(e, hataKoduOptions)}
+                placeholder="Seçiniz"
+                required={false}
+                error={errors.hataKodu}
+              />
+            </div>
+            
+            {/* Değişen Parça */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Değişen Parça</label>
+              <SearchableSelect
+                name="degisenParca"
+                value={formData.degisenParca}
+                options={degisenParcaOptions}
+                onChange={(e) => handleSelectChange(e, degisenParcaOptions)}
+                placeholder="Seçiniz"
+                required={false}
+                error={errors.degisenParca}
+              />
+            </div>
+            
+            {/* Parça Adedi */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Parça Adedi</label>
+              <SearchableSelect
+                name="parcaAdedi"
+                value={formData.parcaAdedi}
+                options={parcaAdediOptions}
+                onChange={(e) => handleSelectChange(e, parcaAdediOptions)}
+                placeholder="Seçiniz"
+                required={false}
+                error={errors.parcaAdedi}
+              />
+            </div>
+            
+            {/* Açıklama */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700">Açıklama *</label>
+              <textarea
+                name="aciklama"
+                value={formData.aciklama}
+                onChange={handleChange}
+                className="mt-1 block w-full border border-gray-300 rounded-md p-2"
+                rows={4}
+                required
+              />
+              {errors.aciklama && <p className="text-red-500 text-xs mt-1">{errors.aciklama}</p>}
+            </div>
+            
+            {/* Kaydet Butonu */}
+            <div className="flex items-center gap-4">
+              <button
+                type="submit"
+                className="bg-blue-500 text-white p-2 rounded-md hover:bg-blue-600 flex items-center gap-2 min-w-[90px]"
+                disabled={isLoading}
+              >
+                {isLoading ? <Spinner /> : 'Kaydet'}
+              </button>
+              {submissionMessage && (
+                <span className={`text-sm ${submissionMessage.includes('başarıyla') ? 'text-green-500' : 'text-red-500'}`}>
+                  {submissionMessage}
+                </span>
+              )}
+            </div>
+          </form>
+
+          {/* Kayıt Tablosu */}
+          <div className="bg-white p-6 rounded-lg shadow-md overflow-x-auto">
+            <h2 className="text-xl font-bold mb-4">Kayıtlar (Firebase Veritabanı)</h2>
+            
+            {isLoading && <p>Veriler yükleniyor...</p>}
+            
+            {!isLoading && tableData.length > 0 ? (
+              <table className="min-w-full border border-gray-300">
+                <thead>
+                  <tr className="bg-gray-100">
+                    {TABLE_HEADERS.map(header => (
+                      <th className="border border-gray-300 p-2 text-left" key={header}>{header}</th>
+                    ))}
+                    {isAdmin && <th className="border border-gray-300 p-2 text-left">Sil</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {tableData.map((entry, index) => (
+                    <tr key={entry.id} className="hover:bg-gray-50">
+                      <td className="border border-gray-300 p-2">{entry.kullaniciNo}</td>
+                      <td className="border border-gray-300 p-2">{entry.tarih}</td>
+                      <td className="border border-gray-300 p-2">{entry.vardiya}</td>
+                      <td className="border border-gray-300 p-2">{entry.hat}</td>
+                      <td className="border border-gray-300 p-2">{entry.dummyNo}</td>
+                      <td className="border border-gray-300 p-2">{entry.jigNo}</td>
+                      <td className="border border-gray-300 p-2">{entry.hataKodu}</td>
+                      <td className="border border-gray-300 p-2">{entry.degisenParca}</td>
+                      <td className="border border-gray-300 p-2">{entry.parcaAdedi}</td>
+                      <td className="border border-gray-300 p-2">{entry.aciklama}</td>
+                      {isAdmin && (
+                        <td className="border border-gray-300 p-2">
+                          <button
+                            onClick={() => handleDeleteRow(index)}
+                            className="bg-red-500 text-white px-2 py-1 rounded hover:bg-red-700 text-xs"
+                          >
+                            Sil
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              !isLoading && <p className="text-gray-500">Henüz kayıt yok.</p>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    // Uygulamayı DOM'a render et
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
